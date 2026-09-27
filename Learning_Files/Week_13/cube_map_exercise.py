@@ -146,6 +146,12 @@ def cursor_func(window, x, y):
         return
         
     dx, dy = x-mouse_status['x'], mouse_status['y']-y 
+
+    mouse_status['x'], mouse_status['y'] = x, y
+
+    if mouse_status[GLFW_MOUSE_BUTTON_LEFT] == GLFW_PRESS:
+        view_rotate[0] += dy * 0.2
+        view_rotate[1] += dx * 0.2
     pass
 
 def scroll_func(window, dx, dy):
@@ -175,19 +181,62 @@ def create_program():
 in vec3 position, normal, color;
 in vec2 uv;
 uniform mat4 model_mat, view_mat, proj_mat;
+out vec3 smooth_position;
+out vec3 smooth_normal;
 void main() 
 {   
     mat4 MVP = proj_mat * view_mat * model_mat;
     gl_Position = MVP * vec4(position, 1);
+
+    smooth_position = vec3(model_mat * vec4(position, 1));
+    mat3 normal_mat = transpose(inverse(mat3(model_mat)));
+    smooth_normal = normalize(normal_mat * normal);
 }
 '''
     fragment_code = '''
 #version 150
+
+in vec3 smooth_position;
+in vec3 smooth_normal;
+
+uniform mat4 view_mat;
+uniform samplerCube cube_map;
+uniform float refract_index;
+uniform int type_selected; // 0: reflection, 1: refraction, 2: fresnel
+
 out vec4 frag_color;
+
 
 void main()
 {
     frag_color = vec4(0, 1, 0, 1);
+    vec3 eye_pos = vec3(inverse(view_mat)* vec4(0, 0, 0, 1));
+    vec3 N = normalize(smooth_normal);
+    vec3 I = normalize(smooth_position - eye_pos);
+
+    if (type_selected == 0) {
+        vec3 reflect_dir = reflect(I, N);
+        frag_color = texture(cube_map, reflect_dir);
+    } else if (type_selected == 1) {
+        float eta = 1.0 / refract_index;
+        vec3 refract_dir = refract(I, N, eta);
+        flag_color = texture(cube_map, refract_dir);
+    } else if (type_selected == 2) {
+        vec3 reflect_dir = reflect(I, N);
+        float eta = 1.0 / refract_index;
+        vec3 refract_dir = refract(I, N, eta);
+
+        vec4 reflect_color = texture(cube_map, reflect_dir);
+        vec4 refract_color = texture(cube_map, refract_dir);
+
+
+        float bias = 0.1;
+        float scale = 2.0;
+        float power = 3.0;
+        float reflectionCoeff = clamp(bias + scale * pow(1.0 - dot(-I, N), power), 0.0, 1.0);
+
+        flag_color = mix(refract_color, reflect_color, reflectionCoeff);
+    }
 }
 '''
     prog_id = glCreateProgram()
@@ -291,6 +340,24 @@ def load_texture_map(filename, active_texture_unit):
 def load_cube_map(filename=None, active_texture_unit=GL_TEXTURE0):
     im = Image.open(filename)
     # Fix me!
+    w, h = im.size
+    sub_w = w // 4
+    sub_h = h // 3
+
+    box = [[2, 1], [0, 1], [1, 0], [1, 2], [1, 1], [3, 1]]
+
+    tex_id = glGenTextures(1)
+    glActiveTexture(active_texture_unit)
+    glBindTexture(GL_TEXTURE_CUBE_MAP, tex_id)
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
+
+    for i in range(6):
+        sub_image = im.crop((box[i][0]*sub_w, box[i][1]*sub_h,
+                                (box[i][0]+1)*sub_w, (box[i][1]+1)*sub_h))
+        image = sub_image.tobytes("raw", im.mode, 0)
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB, sub_w, sub_h, 0, GL_RGB, GL_UNSIGNED_BYTE, image)
+        
+
                
     glGenerateMipmap(GL_TEXTURE_CUBE_MAP)
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
